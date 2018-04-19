@@ -194,7 +194,7 @@ def train(prefix, epoch=10, dataset="MNIST", resume=True, depth=20, ctx=mx.cpu()
         #train_iter = mx.io.NDArrayIter(X_train, y_train, batch_size, shuffle=True)
         #val_iter = mx.io.NDArrayIter(X_test, y_test, batch_size)
 
-        auglist=mx.image.CreateAugmenter((3,32,32), resize=0, rand_mirror=True, hue=0.1, brightness=0.2, saturation=0.1)
+        auglist=mx.image.CreateAugmenter((3,32,32), resize=0, rand_mirror=True, hue=0.1, brightness=0.2, saturation=0.1, rand_crop=True)
         train_iter=mx.image.ImageIter(batch_size=batch_size,data_shape=(3,32,32),path_imgrec="dataset/cifar10_train.rec",aug_list=auglist)
         val_iter=mx.image.ImageIter(batch_size=batch_size,data_shape=(3,32,32),path_imgrec="dataset/cifar10_val.rec")
         depth=depth
@@ -260,5 +260,5 @@ def predict(prefix,epoch):
     print result
 
 
-#train("cnn_models/resnet20/resnet20",dataset="cifar10",ctx=mx.gpu(), resume=True,epoch=118)
-predict("cnn_models/resnet20/resnet20", 125)
+train("cnn_models/resnet56/resnet56",dataset="cifar10",ctx=mx.gpu(), resume=False, depth=56)
+#predict("cnn_models/resnet20/resnet20", 125)
