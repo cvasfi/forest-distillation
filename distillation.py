@@ -23,10 +23,11 @@ class Knowledge_Distiller:
         self.num_classes = num_classes
         self.forest_size = forest_size
         self.get_data()
-        self.reservoirs = list(itertools.repeat({}, self.forest_size))
+        self.reservoirs = [{} for i in range(self.forest_size)]
         self.forest_arr=[]
         self.distill_arr1=[]
         self.distill_arr2=[]
+
 
     def get_data(self):
         if(self.dataset_type=="MNIST"):
@@ -84,6 +85,9 @@ class Knowledge_Distiller:
 
     def fill_reservoirs(self):
         #print "--> filling reservoirs"
+        self.reservoirs = [{} for i in range(self.forest_size)]
+
+
         for cnn_prediction, tree_leaves in itertools.izip(self.cnn_predictions, self.training_leaf_indices):
             for idx, leaf in enumerate(tree_leaves):
                 if (leaf in self.reservoirs[idx]):
@@ -94,7 +98,7 @@ class Knowledge_Distiller:
 
     def update_leaves(self):
         #print "--> Updating leaves"
-        self.updated_leaves = list(itertools.repeat({}, self.forest_size))
+        self.updated_leaves = [{} for i in range(self.forest_size)]
         for idx, reservoir in enumerate(self.reservoirs):
             for leaf, p_list in reservoir.iteritems():
                 guess = np.zeros((self.num_classes))
@@ -140,6 +144,8 @@ class Knowledge_Distiller:
         #self.mod.score(self.val_iter, mx.metric.Accuracy())
         #print("time to predict using CNN: {}".format(cnn_time))
 
+        res_sizes = [len(res) for leaf, res in self.reservoirs[0].iteritems()]
+        print("mean: {}, std: {}, total: {}".format(np.mean(res_sizes), np.std(res_sizes), np.sum(res_sizes)))
 
         forest_preds  = self.rfc.predict(self.X_test_flat)
 
@@ -147,7 +153,7 @@ class Knowledge_Distiller:
 
         forest_leaves = self.rfc.apply(self.X_test_flat)
         distil_predictions1 = self.predict_distilled(forest_preds,forest_leaves,method=1)
-        print("time to predict using distilled forest: {}".format(distilled_time))
+        #print("time to predict using distilled forest: {}".format(distilled_time))
 
         diff1 = distil_predictions1 - self.y_test
 
@@ -168,16 +174,19 @@ class Knowledge_Distiller:
     def scan_forest_size(self):
         results=[]
         self.cnn_predictions = self.cnn_predict().asnumpy()
-        #xxrange = [1,10,50,100, 250, 400]
-        xxrange = [1,5,10,20,30,40,50,100]
+        #xxrange = [1,10,50,100, 200, 300, 400]
+        xxrange = [1,5,10,15,20]#,25,30,40,50,60]
         for i in xxrange:
             self.forest_size=i
-            self.reservoirs = list(itertools.repeat({}, self.forest_size))
+            self.reservoirs = [{} for i in range(self.forest_size)]
             self.train_tree()
             self.training_leaf_indices = self.rfc.apply(self.X_train_flat)
             self.fill_reservoirs()
             self.update_leaves()
             print("=======================")
+            print("num leaves: {}".format(len(self.reservoirs[0])))
+            res_sizes=[len(res) for leaf,res in self.reservoirs[0].iteritems()]
+            print("mean: {}, std: {}, total: {}".format(np.mean(res_sizes),np.std(res_sizes),np.sum(res_sizes)))
             print("forest size: {}".format(self.forest_size))
             self.print_predictions()
             print("========================")
@@ -198,10 +207,10 @@ class Knowledge_Distiller:
 
 
 
-kd=Knowledge_Distiller()
+kd=Knowledge_Distiller()#dataset_type="cifar10")
 #kd.distill()
-###print "-----------------------"
+####print "-----------------------"
 #kd.print_predictions()
-##
+#
 
 kd.scan_forest_size()
