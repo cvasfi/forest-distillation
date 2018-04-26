@@ -14,6 +14,7 @@ import warnings
 import mxnet as mx
 import matplotlib.pyplot as plt
 import time
+import sklearn.preprocessing
 
 class Knowledge_Distiller:
 
@@ -33,20 +34,39 @@ class Knowledge_Distiller:
         if(self.dataset_type=="MNIST"):
             mnist = mx.test_utils.get_mnist()
             self.X_train, self.X_test, self.y_train, self.y_test = (mnist['train_data'], mnist['test_data'], mnist['train_label'], mnist['test_label'])
+            self.X_CNN, self.y_CNN = self.X_train, self.y_train
             self.prefix='cnn_models/mnist'
             self.epoch=16
         elif(self.dataset_type=="cifar10"):
-            def prepare(data):
-                data._get_data()
-                x = data._data.asnumpy()
-                x = np.swapaxes(x, 2, 3)
-                x = np.swapaxes(x, 1, 2)
-                y = data._label
-                return (x,y)
+            def prepare(data,split=False):
+                if(split):
+                    data._get_data()
+                    x = data._data.asnumpy()
+                    x = np.swapaxes(x, 2, 3)
+                    x = np.swapaxes(x, 1, 2)
+                    x1 = x[x.shape[0]/2:]
+                    x2 = x[0:x.shape[0] / 2]
+                    y = data._label
+                    y1 = y[y.shape[0]/2:]
+                    y2 = y[0:y.shape[0]/2]
+                    return x1, y1, x2, y2
+                else:
+                    data._get_data()
+                    x = data._data.asnumpy()
+                    x = np.swapaxes(x, 2, 3)
+                    x = np.swapaxes(x, 1, 2)
+                    y = data._label
+                    return (x,y)
 
             train_data=CIFAR10(train=True)
-            self.X_train, self.y_train = prepare(train_data)
+            split=False         #TODO: remove this feature maybe
+            if split:
+                self.X_train, self.y_train, self.X_CNN, self.y_CNN = prepare(train_data,split=True)
+            else:
+                self.X_train, self.y_train = prepare(train_data)
+                self.X_CNN, self.y_CNN = self.X_train, self.y_train
 
+            print("xtrain shape: {}, xcnn shape: {}, ytrain label: {}, y_cnn shape:{}".format(self.X_train.shape,self.X_CNN.shape,self.y_train.shape, self.y_CNN.shape))
             val_data=CIFAR10(train=False)
             self.X_test, self.y_test = prepare(val_data)
 
@@ -56,18 +76,21 @@ class Knowledge_Distiller:
 
 
         train_shape=self.X_train.shape
+        CNN_shape=self.X_CNN.shape
         test_shape=self.X_test.shape
+
         self.X_train_flat= self.X_train.reshape(train_shape[0], train_shape[1]*train_shape[2]*train_shape[3])
+        self.X_CNN_flat= self.X_CNN.reshape(CNN_shape[0], CNN_shape[1]*CNN_shape[2]*CNN_shape[3])
         self.X_test_flat = self.X_test.reshape(test_shape[0], test_shape[1]*test_shape[2]*test_shape[3])
 
     def cnn_predict(self):
         batch_size = 100
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            data_iter = mx.io.NDArrayIter(self.X_train, self.y_train, batch_size)
+            data_iter = mx.io.NDArrayIter(self.X_CNN, self.y_CNN, batch_size)
             #self.val_iter=mx.io.NDArrayIter(self.X_test, self.y_test, batch_size)
             sym, args, auxs = mx.model.load_checkpoint(self.prefix, self.epoch)
-            mod = mx.mod.Module(symbol=sym, context=mx.cpu())
+            mod = mx.mod.Module(symbol=sym, context=mx.gpu())
             mod.bind(for_training=False, data_shapes=data_iter.provide_data)
             mod.set_params(args, auxs)
             self.mod=mod
@@ -81,7 +104,7 @@ class Knowledge_Distiller:
     def get_leaves_and_labels(self):
         #print "--> getting labels"
         self.cnn_predictions = self.cnn_predict().asnumpy()
-        self.training_leaf_indices = self.rfc.apply(self.X_train_flat) #shape: [num_samples,forest_size]
+        self.training_leaf_indices = self.rfc.apply(self.X_CNN_flat) #shape: [num_samples,forest_size]
 
     def fill_reservoirs(self):
         #print "--> filling reservoirs"
@@ -117,12 +140,25 @@ class Knowledge_Distiller:
         print "distillation done"
 
     def predict_distilled(self, forest_preds, forest_leaves, method=1):
+
+        def get_onehot(a):
+            a = [a]
+            label_binarizer = sklearn.preprocessing.LabelBinarizer()
+            label_binarizer.fit(range(10))
+            b = label_binarizer.transform(a)
+            return b[0]
+
+
+
         distil_predictions=[]
         if method==1:
             for fidx, fp in enumerate(forest_preds):
                 guesses = np.zeros(10)
                 for lidx, leaf in enumerate(forest_leaves[fidx]):
-                    guesses += self.updated_leaves[lidx][leaf]
+                    if leaf in self.updated_leaves[lidx]:
+                        guesses += self.updated_leaves[lidx][leaf]
+                    else:
+                        guesses += get_onehot(forest_preds[fidx])
                 guesses = guesses / self.forest_size
                 distil_predictions.append(np.argmax(guesses))
 
@@ -130,7 +166,10 @@ class Knowledge_Distiller:
             for fidx, fp in enumerate(forest_preds):
                 guesses = []
                 for lidx, leaf in enumerate(forest_leaves[fidx]):
-                    guesses.append(np.argmax(self.updated_leaves[lidx][leaf]))
+                    if leaf in self.updated_leaves[lidx]:
+                        guesses.append(np.argmax(self.updated_leaves[lidx][leaf]))
+                    else:
+                        guesses.append(forest_preds[fidx])
                 guess=np.bincount(guesses).argmax()
                 distil_predictions.append(guess)
 
@@ -174,13 +213,17 @@ class Knowledge_Distiller:
     def scan_forest_size(self):
         results=[]
         self.cnn_predictions = self.cnn_predict().asnumpy()
-        #xxrange = [1,10,50,100, 200, 300, 400]
-        xxrange = [1,5,10,15,20]#,25,30,40,50,60]
+        xxrange = [1,10,50,100, 200, 300, 400]
+        #xxrange = [1,5,10,15,20]#,25,30,40,50,60]
         for i in xxrange:
+
+            #fullrfc = RandomForestClassifier(n_jobs=-1, n_estimators=self.forest_size)
+            #fullrfc.fit(self.X_train_flat, self.y_train)
+
             self.forest_size=i
             self.reservoirs = [{} for i in range(self.forest_size)]
             self.train_tree()
-            self.training_leaf_indices = self.rfc.apply(self.X_train_flat)
+            self.training_leaf_indices = self.rfc.apply(self.X_CNN_flat)
             self.fill_reservoirs()
             self.update_leaves()
             print("=======================")
@@ -207,9 +250,9 @@ class Knowledge_Distiller:
 
 
 
-kd=Knowledge_Distiller()#dataset_type="cifar10")
+kd=Knowledge_Distiller()
 #kd.distill()
-####print "-----------------------"
+#####print "-----------------------"
 #kd.print_predictions()
 #
 
