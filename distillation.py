@@ -1,19 +1,10 @@
-from sklearn.datasets import fetch_mldata
-from matplotlib import pyplot as plt
 import numpy as np
-import pandas as pd
-from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score
-from sklearn.metrics import confusion_matrix
-from sklearn import tree
 import itertools
 from mxnet.gluon.data.vision import CIFAR10
-from sklearn.cluster import MeanShift
 import warnings
 import mxnet as mx
 import matplotlib.pyplot as plt
-import time
 import sklearn.preprocessing
 
 class Knowledge_Distiller:
@@ -26,8 +17,8 @@ class Knowledge_Distiller:
         self.get_data()
         self.reservoirs = [{} for i in range(self.forest_size)]
         self.forest_arr=[]
-        self.distill_arr1=[]
-        self.distill_arr2=[]
+        self.distill_arr_avg=[]
+        self.distill_arr_voting=[]
 
 
     def get_data(self):
@@ -66,7 +57,6 @@ class Knowledge_Distiller:
                 self.X_train, self.y_train = prepare(train_data)
                 self.X_CNN, self.y_CNN = self.X_train, self.y_train
 
-            print("xtrain shape: {}, xcnn shape: {}, ytrain label: {}, y_cnn shape:{}".format(self.X_train.shape,self.X_CNN.shape,self.y_train.shape, self.y_CNN.shape))
             val_data=CIFAR10(train=False)
             self.X_test, self.y_test = prepare(val_data)
 
@@ -88,7 +78,6 @@ class Knowledge_Distiller:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             data_iter = mx.io.NDArrayIter(self.X_CNN, self.y_CNN, batch_size)
-            #self.val_iter=mx.io.NDArrayIter(self.X_test, self.y_test, batch_size)
             sym, args, auxs = mx.model.load_checkpoint(self.prefix, self.epoch)
             mod = mx.mod.Module(symbol=sym, context=mx.gpu())
             mod.bind(for_training=False, data_shapes=data_iter.provide_data)
@@ -97,17 +86,14 @@ class Knowledge_Distiller:
         return mod.predict(eval_data=data_iter)
 
     def train_tree(self):
-        #print "--> training the tree"
         self.rfc = RandomForestClassifier(n_jobs=-1, n_estimators=self.forest_size)
         self.rfc.fit(self.X_train_flat, self.y_train)
 
     def get_leaves_and_labels(self):
-        #print "--> getting labels"
         self.cnn_predictions = self.cnn_predict().asnumpy()
         self.training_leaf_indices = self.rfc.apply(self.X_CNN_flat) #shape: [num_samples,forest_size]
 
     def fill_reservoirs(self):
-        #print "--> filling reservoirs"
         self.reservoirs = [{} for i in range(self.forest_size)]
 
 
@@ -120,7 +106,6 @@ class Knowledge_Distiller:
 
 
     def update_leaves(self):
-        #print "--> Updating leaves"
         self.updated_leaves = [{} for i in range(self.forest_size)]
         for idx, reservoir in enumerate(self.reservoirs):
             for leaf, p_list in reservoir.iteritems():
@@ -178,48 +163,29 @@ class Knowledge_Distiller:
         return distil_predictions
 
     def print_predictions(self):
-
-        #cnn_time=time.time()
-        #self.mod.score(self.val_iter, mx.metric.Accuracy())
-        #print("time to predict using CNN: {}".format(cnn_time))
-
         res_sizes = [len(res) for leaf, res in self.reservoirs[0].iteritems()]
         print("mean: {}, std: {}, total: {}".format(np.mean(res_sizes), np.std(res_sizes), np.sum(res_sizes)))
 
         forest_preds  = self.rfc.predict(self.X_test_flat)
-
-        distilled_time = time.time()
-
         forest_leaves = self.rfc.apply(self.X_test_flat)
-        distil_predictions1 = self.predict_distilled(forest_preds,forest_leaves,method=1)
-        #print("time to predict using distilled forest: {}".format(distilled_time))
 
-        diff1 = distil_predictions1 - self.y_test
+        diff_avg = self.predict_distilled(forest_preds,forest_leaves,method=1) - self.y_test
+        diff_voting = self.predict_distilled(forest_preds,forest_leaves,method=2) - self.y_test
 
-
-        distil_predictions2 = self.predict_distilled(forest_preds,forest_leaves,method=2)
-        diff2 = distil_predictions2 - self.y_test
-
-        distilled_acc1 = 1.0 - float(np.count_nonzero(diff1)) / forest_preds.shape[0]
-        distilled_acc2 = 1.0 - float(np.count_nonzero(diff2)) / forest_preds.shape[0]
+        distilled_avg = 1.0 - float(np.count_nonzero(diff_avg)) / forest_preds.shape[0]
+        distilled_voting = 1.0 - float(np.count_nonzero(diff_voting)) / forest_preds.shape[0]
 
         before_pred= self.rfc.score(self.X_test_flat, self.y_test)
         print( "Before distillation: {}".format(before_pred))
-        print( "After distillation: {} (method 1), {} (method2)".format(distilled_acc1, distilled_acc2))
+        print( "After distillation: {} (method 1), {} (method2)".format(distilled_avg, distilled_voting))
         self.forest_arr.append(before_pred)
-        self.distill_arr1.append(distilled_acc1)
-        self.distill_arr2.append(distilled_acc2)
+        self.distill_arr_avg.append(distilled_avg)
+        self.distill_arr_voting.append(distilled_voting)
 
     def scan_forest_size(self):
-        results=[]
         self.cnn_predictions = self.cnn_predict().asnumpy()
         xxrange = [1,10,50,100, 200, 300, 400]
-        #xxrange = [1,5,10,15,20]#,25,30,40,50,60]
         for i in xxrange:
-
-            #fullrfc = RandomForestClassifier(n_jobs=-1, n_estimators=self.forest_size)
-            #fullrfc.fit(self.X_train_flat, self.y_train)
-
             self.forest_size=i
             self.reservoirs = [{} for i in range(self.forest_size)]
             self.train_tree()
@@ -235,8 +201,8 @@ class Knowledge_Distiller:
             print("========================")
 
         plt.plot(xxrange,self.forest_arr,label="Original accuracy")
-        plt.plot(xxrange,self.distill_arr1,label="Distilled accuracy (average)")
-        plt.plot(xxrange,self.distill_arr2,label="Distilled accuracy (voting)")
+        plt.plot(xxrange,self.distill_arr_avg,label="Distilled accuracy (average)")
+        plt.plot(xxrange,self.distill_arr_voting,label="Distilled accuracy (voting)")
         plt.legend()
         plt.xlabel("forest size")
         plt.ylabel("accuracy")
@@ -248,12 +214,6 @@ class Knowledge_Distiller:
 
 
 
-
-
-kd=Knowledge_Distiller()
-#kd.distill()
-#####print "-----------------------"
-#kd.print_predictions()
-#
-
-kd.scan_forest_size()
+if __name__ == "__main__":
+    kd=Knowledge_Distiller()
+    kd.scan_forest_size()
